@@ -2,7 +2,10 @@ addEventListener('fetch', event => {
   event.respondWith(handleRequest(event.request))
 })
 
-const CONFIG = { KV_TTL: 3600 }
+const CONFIG = {
+  KV_TTL: 3600,
+  RATE_LIMIT_SECONDS: 60 // IP 访问频率限制：60秒
+}
 
 async function handleRequest(request) {
   const url = new URL(request.url)
@@ -84,8 +87,93 @@ function generateMapUrls(lat, lng) {
   };
 }
 
+// 获取客户端真实 IP
+function getClientIP(request) {
+  // Cloudflare Workers 环境下获取真实 IP
+  const cfConnectingIP = request.headers.get('CF-Connecting-IP');
+  if (cfConnectingIP) return cfConnectingIP;
+
+  // 备用方案
+  const xForwardedFor = request.headers.get('X-Forwarded-For');
+  if (xForwardedFor) return xForwardedFor.split(',')[0].trim();
+
+  const xRealIP = request.headers.get('X-Real-IP');
+  if (xRealIP) return xRealIP;
+
+  return null;
+}
+
+// 检查 IP 是否来自中国
+function isChineseIP(request) {
+  // Cloudflare Workers 提供的国家代码
+  const country = request.cf?.country;
+  return country === 'CN';
+}
+
+// 检查 IP 访问频率限制
+async function checkRateLimit(ip) {
+  const key = `rate_limit:${ip}`;
+  const lastAccess = await MOVE_CAR_STATUS.get(key);
+
+  if (lastAccess) {
+    const timePassed = Date.now() - parseInt(lastAccess);
+    const remainingSeconds = Math.ceil((CONFIG.RATE_LIMIT_SECONDS * 1000 - timePassed) / 1000);
+
+    if (timePassed < CONFIG.RATE_LIMIT_SECONDS * 1000) {
+      return {
+        allowed: false,
+        remainingSeconds: remainingSeconds
+      };
+    }
+  }
+
+  // 记录本次访问时间
+  await MOVE_CAR_STATUS.put(key, Date.now().toString(), {
+    expirationTtl: CONFIG.RATE_LIMIT_SECONDS
+  });
+
+  return { allowed: true };
+}
+
 async function handleNotify(request, url) {
   try {
+    // 1. 检查 IP 是否来自中国
+    if (!isChineseIP(request)) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: '服务仅限中国大陆地区使用'
+      }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    // 2. 获取客户端 IP
+    const clientIP = getClientIP(request);
+    if (!clientIP) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: '无法获取客户端 IP'
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    // 3. 检查访问频率限制
+    const rateLimitCheck = await checkRateLimit(clientIP);
+    if (!rateLimitCheck.allowed) {
+      return new Response(JSON.stringify({
+        success: false,
+        error: `请求过于频繁，请在 ${rateLimitCheck.remainingSeconds} 秒后重试`,
+        remainingSeconds: rateLimitCheck.remainingSeconds
+      }), {
+        status: 429,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    }
+
+    // 4. 处理通知请求
     const body = await request.json();
     const message = body.message || '车旁有人等待';
     const location = body.location || null;

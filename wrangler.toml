@@ -1,0 +1,13 @@
+name = "movecar"
+main = "movecar.js"
+compatibility_date = "2024-01-01"
+
+# KV Namespace binding will be added here after creation
+# [[kv_namespaces]]
+# binding = "MOVE_CAR_STATUS"
+# id = "PLACEHOLDER_ID"
+
+[vars]
+# Environment variables
+# PHONE_NUMBER = "+8613800000000"
+# BARK_URL = "https://api.day.app/your-key"
